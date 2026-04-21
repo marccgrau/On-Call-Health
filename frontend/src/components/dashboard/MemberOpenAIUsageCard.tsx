@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useRef, useMemo, useId } from "react"
+import { useState, useRef, useMemo, useId, useEffect } from "react"
 import Image from "next/image"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { TrendingUp, TrendingDown, Minus } from "lucide-react"
@@ -97,16 +97,49 @@ function Sparkline({ usage, days, metric, color }: { usage: UsageData; days: str
   )
 }
 
-export function AnthropicUsageCard({ currentAnalysis, enabled }: { currentAnalysis: any; enabled: boolean }) {
+interface MemberOpenAIUsageCardProps {
+  email: string
+  analysisId?: number | string
+  timeRange?: number | string
+}
+
+export function MemberOpenAIUsageCard({ email, analysisId, timeRange }: MemberOpenAIUsageCardProps) {
+  const [usage, setUsage] = useState<UsageData>({})
+  const [loaded, setLoaded] = useState(false)
   const [activeMetric, setActiveMetric] = useState<keyof DailyEntry>("total_tokens")
 
-  const metadata = currentAnalysis?.analysis_data?.metadata
-  const usage: UsageData = useMemo(() => (metadata?.anthropic_usage as UsageData | undefined) ?? {}, [metadata])
-  const days = useMemo(() => buildSortedDays(usage), [usage])
-  const totals = useMemo(() => sumUsage(usage), [usage])
-  const trend = useMemo(() => computeTrend(usage, 7), [usage])
+  useEffect(() => {
+    if (!email || !analysisId) return
+    const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+    fetch(`${API_BASE}/analyses/users/${encodeURIComponent(email)}/openai-daily-usage?analysis_id=${analysisId}`, {
+      headers: { Authorization: `Bearer ${localStorage.getItem('auth_token')}` }
+    })
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (data?.has_data && data.usage) setUsage(data.usage)
+        setLoaded(true)
+      })
+      .catch(() => setLoaded(true))
+  }, [email, analysisId])
 
-  if (!enabled) return null
+  // When no real usage, generate zero-filled days so the chart always renders
+  const displayUsage = useMemo(() => {
+    if (Object.keys(usage).length > 0) return usage
+    const n = Number(timeRange) || 30
+    const result: UsageData = {}
+    for (let i = n - 1; i >= 0; i--) {
+      const d = new Date()
+      d.setUTCDate(d.getUTCDate() - i)
+      result[d.toISOString().slice(0, 10)] = { input_tokens: 0, output_tokens: 0, total_tokens: 0, requests: 0 }
+    }
+    return result
+  }, [usage, timeRange])
+
+  const days = useMemo(() => buildSortedDays(displayUsage), [displayUsage])
+  const totals = useMemo(() => sumUsage(displayUsage), [displayUsage])
+  const trend = useMemo(() => computeTrend(displayUsage, 7), [displayUsage])
+
+  if (!loaded) return null
 
   const metricOptions: { key: keyof DailyEntry; label: string; color: string }[] = [
     { key: "total_tokens",  label: "Total tokens",  color: "#6366f1" },
@@ -118,57 +151,43 @@ export function AnthropicUsageCard({ currentAnalysis, enabled }: { currentAnalys
   const TrendIcon = trend === null ? Minus : trend > 0 ? TrendingUp : TrendingDown
   const trendColor = trend === null ? "text-neutral-400" : trend > 0 ? "text-green-600" : "text-red-500"
 
-  const hasData = Object.keys(usage).length > 0
-
   return (
-    <div>
-      <Card className="bg-white flex flex-col">
-        <CardHeader className="pb-2 shrink-0">
-          <div className="flex items-center gap-2">
-            <Image src="/images/anthropic-logo.svg" alt="Anthropic" width={16} height={16} className="w-4 h-4" />
-            <CardTitle className="text-neutral-900">Anthropic Team Usage</CardTitle>
+    <Card className="bg-white flex flex-col">
+      <CardHeader className="pb-2 shrink-0">
+        <div className="flex items-center gap-2">
+          <Image src="/images/openai-logo.svg" alt="OpenAI" width={16} height={16} className="w-4 h-4" />
+          <CardTitle className="text-neutral-900">OpenAI Usage</CardTitle>
+        </div>
+        <CardDescription>Past {timeRange ?? days.length} days of personal token consumption</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid grid-cols-4 gap-3">
+          {metricOptions.map(m => (
+            <button key={m.key} onClick={() => setActiveMetric(m.key)}
+              className={`rounded-lg p-2.5 text-left transition-colors border ${activeMetric === m.key ? "border-neutral-300 bg-neutral-50" : "border-neutral-200 bg-white hover:border-neutral-300"}`}
+            >
+              <div className="text-xs text-neutral-400 mb-0.5">{m.label}</div>
+              <div className="text-base font-bold" style={{ color: activeMetric === m.key ? m.color : "#171717" }}>
+                {formatTokens(totals[m.key])}
+              </div>
+            </button>
+          ))}
+        </div>
+        {trend !== null && (
+          <div className="flex items-center gap-1.5 text-xs">
+            <TrendIcon className={`h-3.5 w-3.5 ${trendColor}`} />
+            <span className={trendColor}>{trend > 0 ? "+" : ""}{trend}% vs prior 7 days</span>
           </div>
-          <CardDescription>Past {currentAnalysis?.time_range ?? days.length} days of token consumption</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {!hasData ? (
-            <div className="flex flex-col items-center justify-center py-8 text-center gap-2">
-              <div className="text-2xl">📊</div>
-              <p className="text-sm font-medium text-neutral-600">No usage data yet</p>
-              <p className="text-xs text-neutral-400">Anthropic is connected — usage will appear here after your team makes API calls during the analysis period.</p>
-            </div>
-          ) : (
-            <>
-              <div className="grid grid-cols-4 gap-3">
-                {metricOptions.map(m => (
-                  <button key={m.key} onClick={() => setActiveMetric(m.key)}
-                    className={`rounded-lg p-2.5 text-left transition-colors border ${activeMetric === m.key ? "border-neutral-300 bg-neutral-50" : "border-neutral-200 bg-white hover:border-neutral-300"}`}
-                  >
-                    <div className="text-xs text-neutral-400 mb-0.5">{m.label}</div>
-                    <div className="text-base font-bold" style={{ color: activeMetric === m.key ? m.color : "#171717" }}>
-                      {formatTokens(totals[m.key])}
-                    </div>
-                  </button>
-                ))}
-              </div>
-              {trend !== null && (
-                <div className="flex items-center gap-1.5 text-xs">
-                  <TrendIcon className={`h-3.5 w-3.5 ${trendColor}`} />
-                  <span className={trendColor}>{trend > 0 ? "+" : ""}{trend}% vs prior 7 days</span>
-                </div>
-              )}
-              <div>
-                <span className="text-xs text-neutral-400">{activeConfig.label} / day</span>
-                <Sparkline usage={usage} days={days} metric={activeMetric} color={activeConfig.color} />
-                <div className="flex justify-between mt-1">
-                  <span className="text-xs text-neutral-300">{days[0] ? formatDate(days[0]) : ""}</span>
-                  <span className="text-xs text-neutral-300">{days[days.length - 1] ? formatDate(days[days.length - 1]) : ""}</span>
-                </div>
-              </div>
-            </>
-          )}
-        </CardContent>
-      </Card>
-    </div>
+        )}
+        <div>
+          <span className="text-xs text-neutral-400">{activeConfig.label} / day</span>
+          <Sparkline usage={displayUsage} days={days} metric={activeMetric} color={activeConfig.color} />
+          <div className="flex justify-between mt-1">
+            <span className="text-xs text-neutral-300">{days[0] ? formatDate(days[0]) : ""}</span>
+            <span className="text-xs text-neutral-300">{days[days.length - 1] ? formatDate(days[days.length - 1]) : ""}</span>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
   )
 }
